@@ -1,4 +1,4 @@
-package colorSpaceConverter
+package colorSpace
 
 import (
 	"image/color"
