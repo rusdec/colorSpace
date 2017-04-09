@@ -3,6 +3,11 @@ package colorSpaceConverter
 import (
 	"image/color"
 	"math"
+   "strings"
+   "strconv"
+   "errors"
+   "regexp"
+	"log"
 )
 
 type XYZ struct {
@@ -16,6 +21,8 @@ type Lab struct {
 	A float64
 	B float64
 }
+
+type Normalize XYZ
 
 func RGB2XYZ(c color.RGBA) XYZ {
 	
@@ -45,7 +52,7 @@ func RGB2XYZ(c color.RGBA) XYZ {
 
 
 	return XYZ{
-					X:r*0.4124+g*0.3576+b*0.1805,
+				X:r*0.4124+g*0.3576+b*0.1805,
 					Y:r*0.2126+g*0.7152+b*0.0722,
 					Z:r*0.0193+g*0.1192+b*0.9505}
 }
@@ -87,126 +94,145 @@ func greatestThenT(i float64) float64 {
 	return math.Pow(i,float64(1.0/3.0))
 }
 
-func (lab1 *Lab) DeltaE(lab2 Lab) float64 {
+func DeltaECIE2000(lab1,lab2 Lab, KL, KC, KH float64) float64 {
 
-	//Шаг1. Подготовка первичных переменных
-	//Ci = sqrt(ai^2 + bi^2), где i=1,2
 	C1 := math.Sqrt(math.Pow(lab1.A, 2.0) + math.Pow(lab1.B, 2.0)) 
 	C2 := math.Sqrt(math.Pow(lab2.A, 2.0) + math.Pow(lab2.B, 2.0))
-	
-	//C = (C1 - C2)/2
-	C := (C1 - C2)/2.0
 
-	//G = 0.5*(1-sqrt(C'^7/(C'^7+25^7)))
-	G	:= 0.5*(1-math.Sqrt(math.Pow(C,7.0)/(math.Pow(C,7.0)+math.Pow(25.0,7.0))))
-	
-	//ai' = (1+G)*ai, где i=1,2
+	C := (C1 + C2)/2.0
+
+	G	:= 0.5*(1 - math.Sqrt(math.Pow(C,7.0)/(math.Pow(C,7.0)+math.Pow(25.0,7.0))) )
+
 	a1_ := (1+G)*lab1.A
 	a2_ := (1+G)*lab2.A
 
-	//Ci_ = sqrt(ai'^2 + b'^2), где i=1,2
 	C1_ := math.Sqrt(math.Pow(a1_,2.0) + math.Pow(lab1.B,2.0))
 	C2_ := math.Sqrt(math.Pow(a2_,2.0) + math.Pow(lab2.B,2.0))
 
 	
-	// hi_ = 0, при labi.B = 0 И ai' = 0
-	// иначе hi_ = arctg(bi,ai')
-	// где i=1,2
 	var h1_, h2_ float64
 	if lab1.B == 0.0 && a1_ == 0.0 {
 		h1_ = 0.0
 	} else {
-		h1_ = math.Atan2(lab1.B,a1_)
+		h1_ = 360-math.Abs(rad2deg(math.Atan2(lab1.B,a1_)))
 	} 
 	if lab2.B == 0.0 && a2_ == 0.0 {
 		h2_ = 0.0
 	} else {
-		h2_ = math.Atan2(lab2.B,a2_)
+		h2_ = 360-math.Abs(rad2deg(math.Atan2(lab2.B,a2_)))
 	} 
 
-	//Шаг2. Расчёт DL', DC', DH'
 	
 	deltaL_ := lab2.L - lab1.L
 	deltaC_ := C2_ - C1_
 	
-	halfPi := math.Pi/2.0
 
-	//dh' = 0,							при C1'*C2'=0
-	//dh' = h2' - h1',				при C1'*C2'!=0 И |h2'-h1'|<=180град.
-	//dh' = (h2' - h1')-360град.,	при C1'*C2'!=0 И |h2'-h1'|>180град.
-	//dh' = (h2' - h1')+360град.,	при C1'*C2'!=0 И |h2'-h1'|<-180град.
 	var dh_ float64
 	if C1_*C2_ == 0.0 {
 		dh_ = 0.0
 	} else {
-		if math.Abs(h2_ - h1_) <= halfPi {
+		if math.Abs(h2_ - h1_) <= 180 {
 			dh_ = h2_ - h1_
 		}
-		if math.Abs(h2_ - h1_) > halfPi {
-			dh_ = (h2_ - h1_)-math.Pi
+		if math.Abs(h2_ - h1_) > 180 {
+			dh_ = (h2_ - h1_)-360
 		}
-		if math.Abs(h2_ - h1_) < -(halfPi) {
-			dh_ = (h2_ - h1_)+math.Pi
+		if math.Abs(h2_ - h1_) < -(180) {
+			dh_ = (h2_ - h1_)+360
 		}
 	}
 	
-	//DH' = 2*sqrt(C1'*C2')*sin(dh'/2)
-	deltaH_ := 2.0*math.Sqrt(C1_*C2_)*math.Sin(dh_/2.0)
+	deltaH_ := 2.0*math.Sqrt(C1_*C2_)*math.Sin(deg2rad(dh_)/2.0)
 
-	//Шаг3. Расчёт DE00
-	
-	//L' = (L1 + L2)/2
 	L_ := (lab1.L + lab2.L)/2.0
 	
-	//C' = (C1' + C2')/2
 	C_ := (C1_ + C2_)/2.0
 	
-	//h' = (h1' + h2')/2, 				при |h1' - h2'|<=180град. И C1'*C2'!=0
-	//h' = (h1' + h2'+360град.)/2, 	при 180град. > |h1' - h2'| И |h1' + h2'| < 360град. И C1'*C2'!=0
-	//h' = (h1' + h2'-360град.)/2, 	при 180град. > |h1' - h2'| И |h1' + h2'| >= 360град. И C1'*C2'!=0
-	//h' = (h1' + h2'), при C1'*C2'=0
 	var h_ float64
 	if C1_*C2_ == 0.0 {
 		h_ = (h1_ + h2_)
 	} else {
-		if math.Abs(h1_ - h2_) <= halfPi {
+		if math.Abs(h1_ - h2_) <= 180 {
 			h_ = (h1_ + h2_)/2.0
-		} else if halfPi > math.Abs(h1_ - h2_) && math.Abs(h1_ + h2_) < math.Pi {
+		} else if 180 > math.Abs(h1_ - h2_) && math.Abs(h1_ + h2_) < 360 {
 			h_ = (h1_ + h2_ + math.Pi)/2.0
-		} else if halfPi > math.Abs(h1_ - h2_) && math.Abs(h1_ + h2_) >= math.Pi {
+		} else if 180 > math.Abs(h1_ - h2_) && math.Abs(h1_ + h2_) >= 360 {
 			h_ = (h1_ + h2_ - math.Pi)/2.0
 		}
 	}
-	
-	//T = 1-0.1cos(h'-30град.)+0.24cos(2h') + 0.32cos(3h'+6град.)-0.20cos(4h'-63град.)
-	T := 1.0 - 0.17 * math.Cos(h_-grad2rad(30.0))+0.24*math.Cos(2.0*h_)+0.32*math.Cos(3.0*h_+grad2rad(6.0))-0.20*math.Cos(4.0*h_-(grad2rad(63.0)))
-	
-	//DPhi = 30exp(-[((h'-275град.)/25)^2])
-	deltaPhi := 30.0*math.Exp(-(math.Pow(((h_-grad2rad(275.0))/25.0),2.0) ))
 
-	//Rc = 2sqrt(C'^7/(C'^7+25^7))
+	T := 1.0 - 0.17 * math.Cos(deg2rad(h_-30.0))+0.24*math.Cos(deg2rad(2.0*h_))+0.32*math.Cos(deg2rad(3.0*h_+6.0))-0.20*math.Cos(deg2rad(4.0*h_-63.0))
+	log.Printf("T: %f",T)
+
+	deltaTeta := deg2rad(30.0*math.Exp(-(math.Pow(((h_-275.0)/25.0),2.0) )))
+
 	RC :=	2.0*math.Sqrt(math.Pow(C_,7.0)/(math.Pow(C_,7.0)+math.Pow(25.0,7.0)))
 
-	//Sl = 1+(0.015(L'-50)^2/sqrt(20+(L'-50)^2))
 	SL := 1.0+(0.015*math.Pow(L_-50.0,2.0)/math.Sqrt(20.0+math.Pow(L_-50.0,2)))
 	
-	//Sc = 1+0.045C'
 	SC := 1.0+0.045*C_	
 
-	//Sh = 1+0.015C'T
 	SH := 1.0+0.015*C_*T
 
-	//Rt = -(sin(2DPhi)Rc
-	RT := -(math.Sin(2*deltaPhi))*RC	
+	RT := -(math.Sin(2*deltaTeta))*RC	
 
-	// DE00 = sqrt((DL'/klSl)+(DC'/kcSc)+(DH'/hhSh)+Rt(DC'/kcSc)(DH'/khSh))
-	return math.Sqrt( math.Pow((deltaL_/SL),2.0) + math.Pow((deltaC_/SC),2.0) + math.Pow((deltaH_/SH),2.0) + RT*(deltaC_/SC)*(deltaH_/SH) )	
+	return math.Sqrt( math.Pow((deltaL_/SL*KL),2.0) + math.Pow((deltaC_/SC*KC),2.0) + math.Pow((deltaH_/SH*KH),2.0) + RT*(deltaC_/SC*KC)*(deltaH_/SH*KH) )	
 }
 
-func grad2rad(grad float64) float64 {
-	return (math.Pi*grad)/180.0
+
+func deg2rad(deg float64) float64 {
+	return (math.Pi*deg)/180.0
 }
 
-func (this *XYZ) D65() XYZ {
-	return XYZ{X:95.047, Y:100.000, Z:108.883}
+func rad2deg(rad float64) float64 {
+	return ((180.0*rad)/math.Pi)
+}
+
+func (this *Normalize) D65() XYZ {
+	return XYZ{X:95.047, Y:100.0, Z:108.883}
+}
+
+func Hex2RGB(s string) (color.RGBA, error) {
+   re, err := regexp.Compile("(?i)"+"#?[a-z0-9]{2}[a-z0-9]{2}[a-z0-9]{2}")
+   if err != nil {
+      return color.RGBA{}, err
+   }
+
+   if len(s) > 7 || !re.MatchString(s) {
+      return color.RGBA{}, errors.New("Isn't hex-color.")
+   }
+
+   ss := strings.Split(s, "")
+   if ss[0] == "#" {
+      ss = ss[1:]
+   }
+
+   r, err := strconv.ParseInt(ss[0]+ss[1], 16, 64)
+   if err != nil {
+      return color.RGBA{}, err
+   }
+   g, err := strconv.ParseInt(ss[2]+ss[3], 16, 64)
+   if err != nil {
+      return color.RGBA{}, err
+   }
+   b, err := strconv.ParseInt(ss[4]+ss[5], 16, 64)
+   if err != nil {
+      return color.RGBA{}, err
+   }
+
+   return color.RGBA{R:uint8(r),G:uint8(g),B:uint8(b),A:uint8(255)}, nil
+}
+
+func RGB2Hex(c color.RGBA) string {
+	var hex string
+	
+	hex += dec2hex(c.R)
+	hex += dec2hex(c.G)
+	hex += dec2hex(c.B)
+
+	return hex
+}
+
+func dec2hex(dig uint8) string {
+	return fmt.Sprintf("%02x", dig)
 }
