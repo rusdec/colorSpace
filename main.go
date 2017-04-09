@@ -162,7 +162,6 @@ func DeltaECIE2000(lab1,lab2 Lab, KL, KC, KH float64) float64 {
 	}
 
 	T := 1.0 - 0.17 * math.Cos(deg2rad(h_-30.0))+0.24*math.Cos(deg2rad(2.0*h_))+0.32*math.Cos(deg2rad(3.0*h_+6.0))-0.20*math.Cos(deg2rad(4.0*h_-63.0))
-	log.Printf("T: %f",T)
 
 	deltaTeta := deg2rad(30.0*math.Exp(-(math.Pow(((h_-275.0)/25.0),2.0) )))
 
