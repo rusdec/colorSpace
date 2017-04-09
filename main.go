@@ -7,7 +7,7 @@ import (
    "strconv"
    "errors"
    "regexp"
-	"log"
+	"fmt"
 )
 
 type XYZ struct {
